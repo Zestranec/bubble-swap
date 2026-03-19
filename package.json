@@ -1,0 +1,32 @@
+{
+  "name": "bubble-swap",
+  "version": "1.0.0",
+  "description": "",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "simulate": "npx vite-node src/Simulation.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Zestranec/bubble-swap.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/Zestranec/bubble-swap/issues"
+  },
+  "homepage": "https://github.com/Zestranec/bubble-swap#readme",
+  "dependencies": {
+    "pixi.js": "^8.17.1"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "typescript": "^5.9.3",
+    "vite": "^8.0.1",
+    "vite-node": "^6.0.0"
+  }
+}
