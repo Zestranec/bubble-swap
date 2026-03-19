@@ -44,6 +44,7 @@ export class Game {
   private debugMode = true;
   private roundHistory: string[] = [];
   private roundSeed = 0;
+  private roundResolving = false;
 
   constructor(app: Application) {
     this.app = app;
@@ -105,6 +106,7 @@ export class Game {
     this.roundElapsedMs = 0;
     this.currentTick = 0;
     this.actionLockUntil = 0;
+    this.roundResolving = false;
 
     for (const id of BUBBLE_IDS) {
       this.bubbleViews.get(id)!.resetView();
@@ -116,6 +118,7 @@ export class Game {
   }
 
   private trySwap(target: BubbleId): void {
+    if (this.roundResolving) return;
     if (!this.sm.is('running') || !this.outcome || !this.playerState) return;
     if (this.playerState.activeBubble === target) return;
     if (Date.now() < this.actionLockUntil) return;
@@ -140,6 +143,7 @@ export class Game {
   }
 
   private tryCashout(): void {
+    if (this.roundResolving) return;
     if (!this.sm.is('running') || !this.outcome || !this.playerState) return;
     if (Date.now() < this.actionLockUntil) return;
 
@@ -152,8 +156,15 @@ export class Game {
   }
 
   private resolveRound(won: boolean, payout: number): void {
-    this.sm.transition('resolve');
+    if (this.roundResolving) return;
+    this.roundResolving = true;
+
     this.ui.lockAllInput();
+
+    if (!this.sm.transition('resolve')) {
+      console.warn('[Game] resolveRound: transition to resolve failed, forcing state');
+    }
+
     this.ui.showResolveUI(won, payout);
 
     const result = won ? `WIN +$${payout.toFixed(2)}` : 'LOSS $0';
@@ -213,7 +224,7 @@ export class Game {
   }
 
   private updateRunning(dt: number): void {
-    if (!this.outcome || !this.playerState) return;
+    if (!this.outcome || !this.playerState || this.roundResolving) return;
 
     this.roundElapsedMs += dt * 1000;
     const prevTick = this.currentTick;
@@ -225,7 +236,7 @@ export class Game {
     if (this.currentTick > prevTick) {
       for (let t = prevTick + 1; t <= this.currentTick; t++) {
         this.processTickEvents(t);
-        if (!this.sm.is('running')) return;
+        if (this.roundResolving || !this.sm.is('running')) return;
       }
     }
 
@@ -242,29 +253,35 @@ export class Game {
       }
     }
 
-    if (this.sm.is('running') && this.playerState) {
-      const gross = getCurrentGrossValue(this.playerState, this.currentTick);
-      const net = getCurrentNetCashout(this.playerState, this.currentTick);
-      this.ui.updateValue(gross, net);
+    if (!this.sm.is('running') || this.roundResolving || !this.playerState) return;
 
-      const alive = getAliveBubbles(this.outcome, this.currentTick);
-      this.ui.updateSwapButtons(this.playerState.activeBubble, alive);
+    const activeBubble = this.playerState.activeBubble;
+    const activeAlive = isBubbleAlive(this.outcome, activeBubble, this.currentTick);
+
+    if (!activeAlive) {
+      this.resolveRound(false, 0);
+      return;
     }
 
-    if (this.debugMode && this.outcome) {
+    const gross = getCurrentGrossValue(this.playerState, this.currentTick);
+    const net = getCurrentNetCashout(this.playerState, this.currentTick);
+    this.ui.updateValue(gross, net);
+
+    const alive = getAliveBubbles(this.outcome, this.currentTick);
+    this.ui.updateSwapButtons(activeBubble, alive);
+
+    if (this.debugMode) {
       this.ui.updateDebug(
         `Tick: ${this.currentTick}/${TOTAL_TICKS}  Seed: ${this.roundSeed}\n` +
         `Crash: B=${this.outcome.blue.crashTick} Y=${this.outcome.yellow.crashTick} R=${this.outcome.red.crashTick}\n` +
-        `Active: ${this.playerState?.activeBubble}  Capital: $${this.playerState?.activeCapital.toFixed(2)}\n` +
-        `Gross: $${this.playerState ? getCurrentGrossValue(this.playerState, this.currentTick).toFixed(2) : '0'}`
+        `Active: ${activeBubble}  Capital: $${this.playerState.activeCapital.toFixed(2)}\n` +
+        `Gross: $${gross.toFixed(2)}`
       );
     }
 
-    if (this.currentTick >= TOTAL_TICKS && this.sm.is('running')) {
-      if (this.playerState && isBubbleAlive(this.outcome, this.playerState.activeBubble, this.currentTick)) {
-        const payout = calculateCashout(this.playerState, this.currentTick);
-        this.resolveRound(true, payout);
-      }
+    if (this.currentTick >= TOTAL_TICKS) {
+      const payout = calculateCashout(this.playerState, this.currentTick);
+      this.resolveRound(true, payout);
     }
   }
 
@@ -300,6 +317,7 @@ export class Game {
     this.playerState = null;
     this.roundElapsedMs = 0;
     this.currentTick = 0;
+    this.roundResolving = false;
     this.ui.updateDebug('');
     this.ui.updateValue(0, 0);
   }
