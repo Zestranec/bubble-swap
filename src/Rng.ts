@@ -16,7 +16,9 @@ export class Rng {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   }
 
-  static fromTimestamp(): Rng {
-    return new Rng(Date.now() ^ (Math.random() * 0xffffffff));
+  static fromSecureRandom(): Rng {
+    const buf = new Uint32Array(1);
+    crypto.getRandomValues(buf);
+    return new Rng(buf[0]);
   }
 }

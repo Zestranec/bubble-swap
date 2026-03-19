@@ -34,7 +34,7 @@ export function getCurrentNetCashout(state: PlayerState, currentTick: number): n
 
 export function applySwap(state: PlayerState, targetBubble: BubbleId, currentTick: number): PlayerState {
   const grossBeforeSwap = getCurrentGrossValue(state, currentTick);
-  const capitalAfterFee = grossBeforeSwap * SWAP_MULTIPLIER;
+  const capitalAfterFee = Math.round(grossBeforeSwap * SWAP_MULTIPLIER * 100) / 100;
   const targetTable = MULTIPLIER_TABLES[targetBubble];
   const clampedTick = Math.min(currentTick, targetTable.length - 1);
   return {

@@ -7,7 +7,7 @@ const WOBBLE_AMPLITUDE = 3;
 const WOBBLE_SPEED = 4;
 
 const FRAGMENT_COUNT = 12;
-const FRAGMENT_LIFE_MS = 600;
+export const FRAGMENT_LIFE_MS = 600;
 
 interface Fragment {
   gfx: Graphics;
