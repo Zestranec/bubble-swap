@@ -1,3 +1,4 @@
+import 'pixi.js/unsafe-eval';
 import { Application } from 'pixi.js';
 import { CANVAS_WIDTH, CANVAS_HEIGHT } from './Config';
 import { Game } from './Game';

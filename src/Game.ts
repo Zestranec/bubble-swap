@@ -230,12 +230,13 @@ export class Game {
     }
 
     const interpProgress = (this.roundElapsedMs % TICK_DURATION_MS) / TICK_DURATION_MS;
-    const visualTick = this.currentTick + interpProgress;
+    const visualTick = Math.min(this.currentTick + interpProgress, TOTAL_TICKS);
+    const clampedIntTick = Math.min(Math.floor(visualTick), TOTAL_TICKS);
 
     for (const id of BUBBLE_IDS) {
       const bv = this.bubbleViews.get(id)!;
       if (!bv.isBurst) {
-        bv.tickUpdate(Math.min(visualTick, TOTAL_TICKS), dt);
+        bv.tickUpdate(clampedIntTick, dt);
       } else {
         bv.tickUpdate(this.currentTick, dt);
       }

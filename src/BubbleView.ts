@@ -123,6 +123,11 @@ export class BubbleView extends Container {
     this._wobbleTime += dt;
 
     const table = MULTIPLIER_TABLES[this.id];
+    if (!table) {
+      console.error(`[BubbleView] Missing multiplier table for id="${this.id}"`);
+      return;
+    }
+
     const progress = Math.min(tick / TOTAL_TICKS, 1);
     const radius = BASE_RADIUS + (MAX_RADIUS - BASE_RADIUS) * progress;
 
@@ -133,7 +138,15 @@ export class BubbleView extends Container {
     this.drawBody(radius + wobble);
     this.drawGlow(radius + wobble);
 
-    const mult = table[Math.min(tick, table.length - 1)];
+    const idx = Math.max(0, Math.min(Math.floor(tick), table.length - 1));
+    const mult = table[idx];
+    if (mult === undefined) {
+      console.error(
+        `[BubbleView] Undefined multiplier: id="${this.id}" tick=${tick} idx=${idx} tableLen=${table.length}`
+      );
+      this.multiplierText.text = '?.??x';
+      return;
+    }
     this.multiplierText.text = mult.toFixed(2) + 'x';
 
     this.alpha = 1;
