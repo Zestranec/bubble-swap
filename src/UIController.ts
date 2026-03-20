@@ -119,7 +119,7 @@ export class UIController extends Container {
     const valueStyle = new TextStyle({ fontFamily: 'monospace', fontSize: 16, fontWeight: 'bold', fill: 0x44ff88 });
     this.valueText = new Text({ text: '', style: valueStyle });
     this.valueText.x = CANVAS_WIDTH / 2;
-    this.valueText.y = PANEL_Y - 60;
+    this.valueText.y = PANEL_Y - 138;
     this.valueText.anchor.set(0.5);
     this.addChild(this.valueText);
 
@@ -129,7 +129,7 @@ export class UIController extends Container {
     });
     this.collectText = new Text({ text: 'TAP YOUR BUBBLE TO COLLECT', style: collectStyle });
     this.collectText.x = CANVAS_WIDTH / 2;
-    this.collectText.y = PANEL_Y - 56;
+    this.collectText.y = PANEL_Y - 100;
     this.collectText.anchor.set(0.5);
     this.addChild(this.collectText);
 
@@ -139,7 +139,7 @@ export class UIController extends Container {
     });
     this.swapText = new Text({ text: 'TAP OTHER BUBBLE TO SWITCH  (-3%)', style: swapStyle });
     this.swapText.x = CANVAS_WIDTH / 2;
-    this.swapText.y = PANEL_Y - 28;
+    this.swapText.y = PANEL_Y - 66;
     this.swapText.anchor.set(0.5);
     this.addChild(this.swapText);
 

@@ -164,11 +164,11 @@ export class BubbleView extends Container {
     this.multiplierText.text = mult.toFixed(2) + 'x';
 
     // Active bubble gets a 1.07x scale boost; inactive bubbles stay at base scale
-    const baseTargetScale = 1 + (mult - 1) * 0.4;
-    const targetScale     = this._isActive ? baseTargetScale * 1.07 : baseTargetScale;
+    const baseTargetScale = 1 + (mult - 1) * 0.16;
+    const targetScale     = this._isActive ? baseTargetScale * 1.05 : baseTargetScale;
     this._displayScale += (targetScale - this._displayScale) * Math.min(dt * 8, 1);
     // Add slow breathing oscillation for active bubble only
-    const breathOffset = this._isActive ? 0.025 * Math.sin(this._breathPhase) : 0;
+    const breathOffset = this._isActive ? 0.012 * Math.sin(this._breathPhase) : 0;
     this.scale.set(this._displayScale + breathOffset);
 
     // Inactive non-burst bubbles are slightly dimmed so the active one dominates
