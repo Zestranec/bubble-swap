@@ -1,18 +1,19 @@
 import { Container, Graphics, Text, TextStyle } from 'pixi.js';
-import { BubbleId, BUBBLE_COLORS, BUBBLE_LABELS, MULTIPLIER_TABLES, TOTAL_TICKS } from './Config';
+import { BubbleId, BUBBLE_COLORS, BUBBLE_LABELS, MAX_ROUND_MS } from './Config';
+import { GrowthProfileId, evaluateProfile } from './GrowthProfiles';
 
 const BASE_RADIUS = 50;
-const MAX_RADIUS = 100;
+const MAX_RADIUS  = 100;
 const WOBBLE_AMPLITUDE = 3;
-const WOBBLE_SPEED = 4;
+const WOBBLE_SPEED     = 4;
 
 const FRAGMENT_COUNT = 12;
 export const FRAGMENT_LIFE_MS = 600;
 
 interface Fragment {
-  gfx: Graphics;
-  vx: number;
-  vy: number;
+  gfx:  Graphics;
+  vx:   number;
+  vy:   number;
   life: number;
 }
 
@@ -25,10 +26,11 @@ export class BubbleView extends Container {
   private riskLabel: Text;
 
   private fragments: Fragment[] = [];
-  private _isActive = false;
-  private _isBurst = false;
-  private _currentTick = 0;
-  private _wobbleTime = 0;
+  private _isActive        = false;
+  private _isBurst         = false;
+  private _currentElapsedMs = 0;
+  private _wobbleTime      = 0;
+  private _profileId: GrowthProfileId | null = null;
 
   constructor(id: BubbleId) {
     super();
@@ -43,10 +45,7 @@ export class BubbleView extends Container {
     const color = BUBBLE_COLORS[id];
 
     const labelStyle = new TextStyle({
-      fontFamily: 'monospace',
-      fontSize: 14,
-      fontWeight: 'bold',
-      fill: 0xffffff,
+      fontFamily: 'monospace', fontSize: 14, fontWeight: 'bold', fill: 0xffffff,
     });
     this.nameLabel = new Text({ text: BUBBLE_LABELS[id], style: labelStyle });
     this.nameLabel.anchor.set(0.5);
@@ -54,25 +53,18 @@ export class BubbleView extends Container {
     this.addChild(this.nameLabel);
 
     const multStyle = new TextStyle({
-      fontFamily: 'monospace',
-      fontSize: 18,
-      fontWeight: 'bold',
-      fill: 0xffffff,
+      fontFamily: 'monospace', fontSize: 18, fontWeight: 'bold', fill: 0xffffff,
     });
     this.multiplierText = new Text({ text: '1.00x', style: multStyle });
     this.multiplierText.anchor.set(0.5);
     this.multiplierText.y = 10;
     this.addChild(this.multiplierText);
 
-    const riskStyle = new TextStyle({
-      fontFamily: 'monospace',
-      fontSize: 10,
-      fill: color,
-    });
+    const riskStyle = new TextStyle({ fontFamily: 'monospace', fontSize: 10, fill: color });
     const riskMap: Record<BubbleId, string> = {
-      blue: 'LOW RISK',
+      blue:   'LOW RISK',
       yellow: 'MED RISK',
-      red: 'HIGH RISK',
+      red:    'HIGH RISK',
     };
     this.riskLabel = new Text({ text: riskMap[id], style: riskStyle });
     this.riskLabel.anchor.set(0.5);
@@ -81,6 +73,93 @@ export class BubbleView extends Container {
 
     this.drawBody(BASE_RADIUS);
   }
+
+  // ---- Public setters ----
+
+  setActive(active: boolean): void { this._isActive = active; }
+  get isActive(): boolean           { return this._isActive; }
+  get isBurst(): boolean            { return this._isBurst; }
+
+  /** Call at round start with the profile drawn for this bubble this round. */
+  setProfile(profileId: GrowthProfileId): void {
+    this._profileId = profileId;
+  }
+
+  // ---- Update ----
+
+  /** elapsedMs = milliseconds since round start (0 during idle). */
+  tickUpdate(elapsedMs: number, dt: number): void {
+    if (this._isBurst) {
+      this.updateFragments(dt);
+      return;
+    }
+
+    this._currentElapsedMs = elapsedMs;
+    this._wobbleTime += dt;
+
+    const progress  = Math.min(elapsedMs / MAX_ROUND_MS, 1);
+    const radius    = BASE_RADIUS + (MAX_RADIUS - BASE_RADIUS) * progress;
+
+    const instability = progress * progress;
+    const wobble = Math.sin(this._wobbleTime * WOBBLE_SPEED * (1 + instability * 3))
+      * WOBBLE_AMPLITUDE * (1 + instability * 4);
+
+    this.drawBody(radius + wobble);
+    this.drawGlow(radius + wobble);
+
+    const mult = this._profileId ? evaluateProfile(this._profileId, elapsedMs) : 1.0;
+    this.multiplierText.text = mult.toFixed(2) + 'x';
+
+    this.alpha = 1;
+    this.nameLabel.visible      = true;
+    this.multiplierText.visible = true;
+    this.riskLabel.visible      = true;
+  }
+
+  // ---- Burst ----
+
+  burst(): void {
+    if (this._isBurst) return;
+    this._isBurst = true;
+
+    this.body.clear();
+    this.glow.clear();
+    this.nameLabel.visible      = false;
+    this.multiplierText.visible = false;
+    this.riskLabel.visible      = false;
+
+    this.spawnFragments();
+  }
+
+  // ---- Reset ----
+
+  cleanup(): void {
+    for (const f of this.fragments) {
+      this.removeChild(f.gfx);
+      f.gfx.destroy();
+    }
+    this.fragments = [];
+  }
+
+  resetView(): void {
+    this.cleanup();
+    this._isBurst          = false;
+    this._isActive         = false;
+    this._currentElapsedMs = 0;
+    this._wobbleTime       = 0;
+    this._profileId        = null;
+
+    this.alpha = 1;
+    this.nameLabel.visible      = true;
+    this.multiplierText.visible = true;
+    this.riskLabel.visible      = true;
+    this.multiplierText.text    = '1.00x';
+
+    this.drawBody(BASE_RADIUS);
+    this.glow.clear();
+  }
+
+  // ---- Private helpers ----
 
   private drawBody(radius: number): void {
     const color = BUBBLE_COLORS[this.id];
@@ -101,130 +180,34 @@ export class BubbleView extends Container {
     }
   }
 
-  setActive(active: boolean): void {
-    this._isActive = active;
-  }
-
-  get isActive(): boolean {
-    return this._isActive;
-  }
-
-  get isBurst(): boolean {
-    return this._isBurst;
-  }
-
-  tickUpdate(tick: number, dt: number): void {
-    if (this._isBurst) {
-      this.updateFragments(dt);
-      return;
-    }
-
-    this._currentTick = tick;
-    this._wobbleTime += dt;
-
-    const table = MULTIPLIER_TABLES[this.id];
-    if (!table) {
-      console.error(`[BubbleView] Missing multiplier table for id="${this.id}"`);
-      return;
-    }
-
-    const progress = Math.min(tick / TOTAL_TICKS, 1);
-    const radius = BASE_RADIUS + (MAX_RADIUS - BASE_RADIUS) * progress;
-
-    const instability = progress * progress;
-    const wobble = Math.sin(this._wobbleTime * WOBBLE_SPEED * (1 + instability * 3))
-      * WOBBLE_AMPLITUDE * (1 + instability * 4);
-
-    this.drawBody(radius + wobble);
-    this.drawGlow(radius + wobble);
-
-    const idx = Math.max(0, Math.min(Math.floor(tick), table.length - 1));
-    const mult = table[idx];
-    if (mult === undefined) {
-      console.error(
-        `[BubbleView] Undefined multiplier: id="${this.id}" tick=${tick} idx=${idx} tableLen=${table.length}`
-      );
-      this.multiplierText.text = '?.??x';
-      return;
-    }
-    this.multiplierText.text = mult.toFixed(2) + 'x';
-
-    this.alpha = 1;
-    this.nameLabel.visible = true;
-    this.multiplierText.visible = true;
-    this.riskLabel.visible = true;
-  }
-
-  burst(): void {
-    if (this._isBurst) return;
-    this._isBurst = true;
-
-    this.body.clear();
-    this.glow.clear();
-    this.nameLabel.visible = false;
-    this.multiplierText.visible = false;
-    this.riskLabel.visible = false;
-
-    this.spawnFragments();
-  }
-
   private spawnFragments(): void {
-    const color = BUBBLE_COLORS[this.id];
-    const progress = Math.min(this._currentTick / TOTAL_TICKS, 1);
-    const radius = BASE_RADIUS + (MAX_RADIUS - BASE_RADIUS) * progress;
+    const color    = BUBBLE_COLORS[this.id];
+    const progress = Math.min(this._currentElapsedMs / MAX_ROUND_MS, 1);
+    const radius   = BASE_RADIUS + (MAX_RADIUS - BASE_RADIUS) * progress;
 
     for (let i = 0; i < FRAGMENT_COUNT; i++) {
       const angle = (Math.PI * 2 * i) / FRAGMENT_COUNT + (Math.random() - 0.5) * 0.5;
       const speed = 80 + Math.random() * 120;
-      const size = 3 + Math.random() * 6;
+      const size  = 3 + Math.random() * 6;
+
       const gfx = new Graphics();
       gfx.circle(0, 0, size);
       gfx.fill({ color, alpha: 0.8 });
       gfx.x = Math.cos(angle) * radius * 0.3;
       gfx.y = Math.sin(angle) * radius * 0.3;
       this.addChild(gfx);
-      this.fragments.push({
-        gfx,
-        vx: Math.cos(angle) * speed,
-        vy: Math.sin(angle) * speed,
-        life: FRAGMENT_LIFE_MS,
-      });
+
+      this.fragments.push({ gfx, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed, life: FRAGMENT_LIFE_MS });
     }
   }
 
   private updateFragments(dt: number): void {
-    const dtSec = dt;
     for (const f of this.fragments) {
-      f.life -= dtSec * 1000;
-      f.gfx.x += f.vx * dtSec;
-      f.gfx.y += f.vy * dtSec;
+      f.life    -= dt * 1000;
+      f.gfx.x   += f.vx * dt;
+      f.gfx.y   += f.vy * dt;
       f.gfx.alpha = Math.max(0, f.life / FRAGMENT_LIFE_MS);
-      f.vy += 100 * dtSec;
+      f.vy += 100 * dt;
     }
-  }
-
-  cleanup(): void {
-    for (const f of this.fragments) {
-      this.removeChild(f.gfx);
-      f.gfx.destroy();
-    }
-    this.fragments = [];
-  }
-
-  resetView(): void {
-    this.cleanup();
-    this._isBurst = false;
-    this._isActive = false;
-    this._currentTick = 0;
-    this._wobbleTime = 0;
-
-    this.alpha = 1;
-    this.nameLabel.visible = true;
-    this.multiplierText.visible = true;
-    this.riskLabel.visible = true;
-    this.multiplierText.text = '1.00x';
-
-    this.drawBody(BASE_RADIUS);
-    this.glow.clear();
   }
 }

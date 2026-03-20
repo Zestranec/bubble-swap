@@ -1,54 +1,53 @@
 import { Application, Container, Graphics } from 'pixi.js';
 import {
   BubbleId, BUBBLE_IDS, CANVAS_WIDTH, CANVAS_HEIGHT,
-  TICK_DURATION_MS, TOTAL_TICKS, ACTION_LOCK_MS,
+  ACTION_LOCK_MS, MAX_ROUND_MS,
+  POST_BURST_RESOLVE_DELAY_MS, POST_CASHOUT_RESOLVE_DELAY_MS,
 } from './Config';
 import { GameStateMachine } from './GameStateMachine';
 import { Rng } from './Rng';
 import { RoundOutcome, generateRoundOutcome, isBubbleAlive, getAliveBubbles } from './OutcomeController';
 import {
-  PlayerState, createPlayerState, getCurrentGrossValue,
+  ActivePosition, createActivePosition, getCurrentGrossValue,
   getCurrentNetCashout, applySwap, calculateCashout,
 } from './PayoutController';
 import { BubbleView, FRAGMENT_LIFE_MS } from './BubbleView';
 import { UIController } from './UIController';
 
 const BUBBLE_POSITIONS: Record<BubbleId, { x: number; y: number }> = {
-  blue: { x: CANVAS_WIDTH / 2 - 200, y: CANVAS_HEIGHT / 2 - 40 },
-  yellow: { x: CANVAS_WIDTH / 2, y: CANVAS_HEIGHT / 2 - 40 },
-  red: { x: CANVAS_WIDTH / 2 + 200, y: CANVAS_HEIGHT / 2 - 40 },
+  blue:   { x: CANVAS_WIDTH / 2 - 200, y: CANVAS_HEIGHT / 2 - 40 },
+  yellow: { x: CANVAS_WIDTH / 2,       y: CANVAS_HEIGHT / 2 - 40 },
+  red:    { x: CANVAS_WIDTH / 2 + 200, y: CANVAS_HEIGHT / 2 - 40 },
 };
 
-const RESOLVE_DURATION_MS = 2000;
 const RESET_DURATION_MS = 300;
 
 export class Game {
   private app: Application;
-  private sm = new GameStateMachine();
+  private sm  = new GameStateMachine();
   private rng: Rng;
 
   private bubbleViews: Map<BubbleId, BubbleView> = new Map();
-  private bubbleLayer = new Container();
+  private bubbleLayer    = new Container();
   private swapTrailLayer = new Container();
   private ui: UIController;
 
   private swapTrailTimers: Array<{ gfx: Graphics; life: number }> = [];
 
-  private outcome: RoundOutcome | null = null;
-  private playerState: PlayerState | null = null;
+  private outcome:     RoundOutcome | null   = null;
+  private playerState: ActivePosition | null = null;
 
   private roundElapsedMs = 0;
-  private currentTick = 0;
   private actionLockUntil = 0;
   private resolveTimer = 0;
-  private resetTimer = 0;
+  private resetTimer   = 0;
 
-  private debugMode = true;
+  private debugMode    = true;
   private roundHistory: string[] = [];
-  private roundSeed = 0;
-  private roundResolving = false;
+  private roundSeed    = 0;
+  private roundResolving  = false;
   private pendingActiveLoss = false;
-  private activeBurstTimer = 0;
+  private activeBurstTimer  = 0;
 
   constructor(app: Application) {
     this.app = app;
@@ -66,6 +65,8 @@ export class Game {
       this.update(dt);
     });
   }
+
+  // ---- Scene setup ----
 
   private buildScene(): void {
     const bg = new Graphics();
@@ -86,16 +87,16 @@ export class Game {
   }
 
   private wireCallbacks(): void {
-    this.ui.onStart = (bet, bubble) => this.startRound(bet, bubble);
-    this.ui.onSwap = (target) => this.trySwap(target);
-    this.ui.onCashout = () => this.tryCashout();
+    this.ui.onStart   = (bet, bubble) => this.startRound(bet, bubble);
+    this.ui.onSwap    = (target)       => this.trySwap(target);
+    this.ui.onCashout = ()             => this.tryCashout();
   }
 
   private onStateChange(to: string): void {
-    if (to === 'idle') {
-      this.ui.showIdleUI();
-    }
+    if (to === 'idle') this.ui.showIdleUI();
   }
+
+  // ---- Round lifecycle ----
 
   private startRound(bet: number, startBubble: BubbleId): void {
     if (!this.sm.is('idle')) return;
@@ -104,17 +105,20 @@ export class Game {
 
     this.roundSeed = (this.rng.next() * 0xffffffff) >>> 0;
     const roundRng = new Rng(this.roundSeed);
-    this.outcome = generateRoundOutcome(roundRng);
-    this.playerState = createPlayerState(startBubble, bet);
+    this.outcome     = generateRoundOutcome(roundRng);
+    this.playerState = createActivePosition(startBubble, bet, this.outcome);
 
-    this.roundElapsedMs = 0;
-    this.currentTick = 0;
-    this.actionLockUntil = 0;
-    this.roundResolving = false;
+    this.roundElapsedMs   = 0;
+    this.actionLockUntil  = 0;
+    this.roundResolving   = false;
+    this.pendingActiveLoss = false;
+    this.activeBurstTimer  = 0;
 
     for (const id of BUBBLE_IDS) {
-      this.bubbleViews.get(id)!.resetView();
-      this.bubbleViews.get(id)!.setActive(id === startBubble);
+      const bv = this.bubbleViews.get(id)!;
+      bv.resetView();
+      bv.setActive(id === startBubble);
+      bv.setProfile(this.outcome[id].profileId);
     }
 
     this.sm.transition('running');
@@ -122,40 +126,39 @@ export class Game {
   }
 
   private trySwap(target: BubbleId): void {
-    if (this.roundResolving) return;
+    if (this.roundResolving || this.pendingActiveLoss) return;
     if (!this.sm.is('running') || !this.outcome || !this.playerState) return;
-    if (this.playerState.activeBubble === target) return;
+    if (this.playerState.bubbleId === target) return;
     if (Date.now() < this.actionLockUntil) return;
 
-    const tick = this.currentTick;
-
-    if (!isBubbleAlive(this.outcome, this.playerState.activeBubble, tick)) return;
-    if (!isBubbleAlive(this.outcome, target, tick)) return;
+    const nowMs = this.roundElapsedMs;
+    if (!isBubbleAlive(this.outcome, this.playerState.bubbleId, nowMs)) return;
+    if (!isBubbleAlive(this.outcome, target, nowMs)) return;
 
     this.actionLockUntil = Date.now() + ACTION_LOCK_MS;
 
-    const fromBubble = this.playerState.activeBubble;
-    this.playerState = applySwap(this.playerState, target, tick);
+    const fromBubble = this.playerState.bubbleId;
+    this.playerState = applySwap(this.playerState, target, this.outcome, nowMs);
 
     this.bubbleViews.get(fromBubble)!.setActive(false);
     this.bubbleViews.get(target)!.setActive(true);
 
     this.showSwapTrail(fromBubble, target);
 
-    const alive = getAliveBubbles(this.outcome, tick);
+    const alive = getAliveBubbles(this.outcome, nowMs);
     this.ui.updateSwapButtons(target, alive);
   }
 
   private tryCashout(): void {
-    if (this.roundResolving) return;
+    if (this.roundResolving || this.pendingActiveLoss) return;
     if (!this.sm.is('running') || !this.outcome || !this.playerState) return;
     if (Date.now() < this.actionLockUntil) return;
 
-    const tick = this.currentTick;
-    if (!isBubbleAlive(this.outcome, this.playerState.activeBubble, tick)) return;
+    const nowMs = this.roundElapsedMs;
+    if (!isBubbleAlive(this.outcome, this.playerState.bubbleId, nowMs)) return;
 
     this.actionLockUntil = Number.MAX_SAFE_INTEGER;
-    const payout = calculateCashout(this.playerState, tick);
+    const payout = calculateCashout(this.playerState, this.outcome, nowMs);
     this.resolveRound(true, payout);
   }
 
@@ -167,7 +170,7 @@ export class Game {
     this.ui.lockAllInput();
 
     if (!this.sm.transition('resolve')) {
-      console.warn('[Game] resolveRound: transition to resolve failed, forcing state');
+      console.warn('[Game] resolveRound: transition to resolve failed');
     }
 
     this.ui.showResolveUI(won, payout);
@@ -177,42 +180,18 @@ export class Game {
     if (this.roundHistory.length > 5) this.roundHistory.pop();
     this.ui.updateHistory(this.roundHistory.join('\n'));
 
-    this.resolveTimer = RESOLVE_DURATION_MS;
+    this.resolveTimer = won ? POST_CASHOUT_RESOLVE_DELAY_MS : POST_BURST_RESOLVE_DELAY_MS;
   }
 
-  private showSwapTrail(from: BubbleId, to: BubbleId): void {
-    const fromPos = BUBBLE_POSITIONS[from];
-    const toPos = BUBBLE_POSITIONS[to];
-
-    const trail = new Graphics();
-    trail.moveTo(fromPos.x, fromPos.y);
-    trail.lineTo(toPos.x, toPos.y);
-    trail.stroke({ color: 0xffffff, alpha: 0.6, width: 2 });
-    this.swapTrailLayer.addChild(trail);
-
-    this.swapTrailTimers.push({ gfx: trail, life: 400 });
-  }
-
-  private updateSwapTrails(dtMs: number): void {
-    for (let i = this.swapTrailTimers.length - 1; i >= 0; i--) {
-      const t = this.swapTrailTimers[i];
-      t.life -= dtMs;
-      t.gfx.alpha = Math.max(0, t.life / 400);
-      if (t.life <= 0) {
-        this.swapTrailLayer.removeChild(t.gfx);
-        t.gfx.destroy();
-        this.swapTrailTimers.splice(i, 1);
-      }
-    }
-  }
+  // ---- Main update loop ----
 
   private update(dt: number): void {
     this.updateSwapTrails(dt * 1000);
 
     // Drive active burst animation and defer resolve until it completes.
     if (this.pendingActiveLoss && this.playerState) {
-      const bv = this.bubbleViews.get(this.playerState.activeBubble)!;
-      bv.tickUpdate(this.currentTick, dt);
+      const bv = this.bubbleViews.get(this.playerState.bubbleId)!;
+      bv.tickUpdate(this.roundElapsedMs, dt);
       this.activeBurstTimer -= dt * 1000;
       if (this.activeBurstTimer <= 0) {
         this.pendingActiveLoss = false;
@@ -226,7 +205,7 @@ export class Game {
     } else if (this.sm.is('resolve')) {
       // Keep any still-animating burst views alive during the resolve screen.
       for (const bv of this.bubbleViews.values()) {
-        if (bv.isBurst) bv.tickUpdate(this.currentTick, dt);
+        if (bv.isBurst) bv.tickUpdate(this.roundElapsedMs, dt);
       }
       this.resolveTimer -= dt * 1000;
       if (this.resolveTimer <= 0) {
@@ -249,97 +228,116 @@ export class Game {
     }
   }
 
+  // ---- Running update ----
+
   private updateRunning(dt: number): void {
     if (!this.outcome || !this.playerState || this.roundResolving || this.pendingActiveLoss) return;
 
     this.roundElapsedMs += dt * 1000;
-    const prevTick = this.currentTick;
-    this.currentTick = Math.min(
-      Math.floor(this.roundElapsedMs / TICK_DURATION_MS),
-      TOTAL_TICKS
-    );
 
-    if (this.currentTick > prevTick) {
-      for (let t = prevTick + 1; t <= this.currentTick; t++) {
-        this.processTickEvents(t);
-        if (this.roundResolving || this.pendingActiveLoss || !this.sm.is('running')) return;
-      }
-    }
+    // Burst priority: detect and handle bursts before any other processing.
+    this.detectBursts();
+    if (this.roundResolving || this.pendingActiveLoss || !this.sm.is('running')) return;
 
-    const interpProgress = (this.roundElapsedMs % TICK_DURATION_MS) / TICK_DURATION_MS;
-    const visualTick = Math.min(this.currentTick + interpProgress, TOTAL_TICKS);
-    const clampedIntTick = Math.min(Math.floor(visualTick), TOTAL_TICKS);
-
+    // Visual update for all alive bubbles (burst views update in the pendingActiveLoss / resolve paths).
     for (const id of BUBBLE_IDS) {
       const bv = this.bubbleViews.get(id)!;
-      if (!bv.isBurst) {
-        bv.tickUpdate(clampedIntTick, dt);
-      } else {
-        bv.tickUpdate(this.currentTick, dt);
-      }
+      if (!bv.isBurst) bv.tickUpdate(this.roundElapsedMs, dt);
     }
 
     if (!this.sm.is('running') || this.roundResolving || !this.playerState) return;
 
-    const activeBubble = this.playerState.activeBubble;
-    const activeAlive = isBubbleAlive(this.outcome, activeBubble, this.currentTick);
-
-    if (!activeAlive) {
-      this.resolveRound(false, 0);
-      return;
-    }
-
-    const gross = getCurrentGrossValue(this.playerState, this.currentTick);
-    const net = getCurrentNetCashout(this.playerState, this.currentTick);
+    const activeBubble = this.playerState.bubbleId;
+    const gross = getCurrentGrossValue(this.playerState, this.outcome, this.roundElapsedMs);
+    const net   = getCurrentNetCashout(this.playerState, this.outcome, this.roundElapsedMs);
     this.ui.updateValue(gross, net);
 
-    const alive = getAliveBubbles(this.outcome, this.currentTick);
+    const alive = getAliveBubbles(this.outcome, this.roundElapsedMs);
     this.ui.updateSwapButtons(activeBubble, alive);
 
     if (this.debugMode) {
+      const o = this.outcome;
       this.ui.updateDebug(
-        `Tick: ${this.currentTick}/${TOTAL_TICKS}  Seed: ${this.roundSeed}\n` +
-        `Crash: B=${this.outcome.blue.crashTick} Y=${this.outcome.yellow.crashTick} R=${this.outcome.red.crashTick}\n` +
-        `Active: ${activeBubble}  Capital: $${this.playerState.activeCapital.toFixed(2)}\n` +
-        `Gross: $${gross.toFixed(2)}`
+        `Elapsed: ${this.roundElapsedMs.toFixed(0)}ms  Seed: ${this.roundSeed}\n` +
+        `Crash:   B=${o.blue.crashTimeMs.toFixed(0)}  Y=${o.yellow.crashTimeMs.toFixed(0)}  R=${o.red.crashTimeMs.toFixed(0)}\n` +
+        `Profile: B=${o.blue.profileId}  Y=${o.yellow.profileId}  R=${o.red.profileId}\n` +
+        `Active:  ${activeBubble}  Capital: $${this.playerState.enteredCapital.toFixed(2)}\n` +
+        `Gross: $${gross.toFixed(2)}  Net: $${net.toFixed(2)}\n` +
+        `Burst:   B=${!isBubbleAlive(o,'blue',this.roundElapsedMs)}  Y=${!isBubbleAlive(o,'yellow',this.roundElapsedMs)}  R=${!isBubbleAlive(o,'red',this.roundElapsedMs)}`
       );
     }
 
-    if (this.currentTick >= TOTAL_TICKS) {
-      const payout = calculateCashout(this.playerState, this.currentTick);
+    if (this.roundElapsedMs >= MAX_ROUND_MS) {
+      const payout = calculateCashout(this.playerState, this.outcome, this.roundElapsedMs);
       this.resolveRound(true, payout);
     }
   }
 
-  private processTickEvents(tick: number): void {
+  // ---- Burst detection ----
+
+  /**
+   * Each frame during 'running': check if any bubble has passed its crashTimeMs.
+   * For the active bubble: start the burst animation window (pendingActiveLoss).
+   * For non-active bubbles: burst immediately and continue.
+   * Burst priority: active bubble loss is processed before any further logic.
+   */
+  private detectBursts(): void {
     if (!this.outcome || !this.playerState) return;
 
     for (const id of BUBBLE_IDS) {
-      if (tick >= this.outcome[id].crashTick) {
+      if (this.roundElapsedMs >= this.outcome[id].crashTimeMs) {
         const bv = this.bubbleViews.get(id)!;
         if (!bv.isBurst) {
           bv.burst();
-          if (this.playerState.activeBubble === id) {
+          if (this.playerState.bubbleId === id) {
             console.log(`[Game] Active bubble burst detected: ${id}`);
             console.log(`[Game] Burst animation start — deferring resolve for ${FRAGMENT_LIFE_MS}ms`);
-            // Lock input immediately but let the burst animation finish before resolving.
-            this.actionLockUntil = Number.MAX_SAFE_INTEGER;
+            this.actionLockUntil  = Number.MAX_SAFE_INTEGER;
             this.pendingActiveLoss = true;
-            this.activeBurstTimer = FRAGMENT_LIFE_MS;
-            return;
+            this.activeBurstTimer  = FRAGMENT_LIFE_MS;
+            return; // Stop burst scan; resolve deferred until animation finishes.
           }
         }
       }
     }
   }
 
+  // ---- Swap trail ----
+
+  private showSwapTrail(from: BubbleId, to: BubbleId): void {
+    const fromPos = BUBBLE_POSITIONS[from];
+    const toPos   = BUBBLE_POSITIONS[to];
+
+    const trail = new Graphics();
+    trail.moveTo(fromPos.x, fromPos.y);
+    trail.lineTo(toPos.x, toPos.y);
+    trail.stroke({ color: 0xffffff, alpha: 0.6, width: 2 });
+    this.swapTrailLayer.addChild(trail);
+
+    this.swapTrailTimers.push({ gfx: trail, life: 400 });
+  }
+
+  private updateSwapTrails(dtMs: number): void {
+    for (let i = this.swapTrailTimers.length - 1; i >= 0; i--) {
+      const t = this.swapTrailTimers[i];
+      t.life  -= dtMs;
+      t.gfx.alpha = Math.max(0, t.life / 400);
+      if (t.life <= 0) {
+        this.swapTrailLayer.removeChild(t.gfx);
+        t.gfx.destroy();
+        this.swapTrailTimers.splice(i, 1);
+      }
+    }
+  }
+
+  // ---- Reset ----
+
   private performReset(): void {
     console.log('[Game] Reset executed');
     this.pendingActiveLoss = false;
-    this.activeBurstTimer = 0;
-    for (const bv of this.bubbleViews.values()) {
-      bv.resetView();
-    }
+    this.activeBurstTimer  = 0;
+
+    for (const bv of this.bubbleViews.values()) bv.resetView();
 
     for (const t of this.swapTrailTimers) {
       this.swapTrailLayer.removeChild(t.gfx);
@@ -347,10 +345,9 @@ export class Game {
     }
     this.swapTrailTimers = [];
 
-    this.outcome = null;
-    this.playerState = null;
+    this.outcome       = null;
+    this.playerState   = null;
     this.roundElapsedMs = 0;
-    this.currentTick = 0;
     this.roundResolving = false;
     this.ui.updateDebug('');
     this.ui.updateValue(0, 0);

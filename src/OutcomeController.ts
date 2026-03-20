@@ -1,45 +1,34 @@
-import { BubbleId, BUBBLE_IDS, HAZARD_TABLES, TOTAL_TICKS } from './Config';
+import { BubbleId, BUBBLE_IDS } from './Config';
 import { Rng } from './Rng';
+import { GrowthProfileId, generateBubbleOutcome } from './GrowthProfiles';
 
 export interface BubbleOutcome {
-  /** Bubble bursts when currentTick >= crashTick. TOTAL_TICKS + 1 means survives all ticks. */
-  crashTick: number;
+  bubbleId: BubbleId;
+  profileId: GrowthProfileId;
+  /** Bubble bursts when elapsedMs >= crashTimeMs. */
+  crashTimeMs: number;
 }
 
 export interface RoundOutcome {
-  blue: BubbleOutcome;
+  blue:   BubbleOutcome;
   yellow: BubbleOutcome;
-  red: BubbleOutcome;
+  red:    BubbleOutcome;
 }
 
-/**
- * Generate a crash tick for a single bubble using its hazard table.
- * Iterates intervals 0..11. For each interval i, if rng.next() < hazard[i],
- * the bubble crashes at tick (i + 1). If it survives all intervals,
- * crashTick = TOTAL_TICKS + 1 (never crashes).
- */
-function generateCrashTick(rng: Rng, hazardTable: number[]): number {
-  for (let i = 0; i < hazardTable.length; i++) {
-    const roll = rng.next();
-    if (roll < hazardTable[i]) {
-      return i + 1;
-    }
-  }
-  return TOTAL_TICKS + 1;
-}
-
+/** Generate a fully deterministic round outcome before animation begins. */
 export function generateRoundOutcome(rng: Rng): RoundOutcome {
   const outcome: Partial<RoundOutcome> = {};
   for (const id of BUBBLE_IDS) {
-    outcome[id] = { crashTick: generateCrashTick(rng, HAZARD_TABLES[id]) };
+    const { profileId, crashTimeMs } = generateBubbleOutcome(rng, id);
+    outcome[id] = { bubbleId: id, profileId, crashTimeMs };
   }
   return outcome as RoundOutcome;
 }
 
-export function isBubbleAlive(outcome: RoundOutcome, id: BubbleId, tick: number): boolean {
-  return tick < outcome[id].crashTick;
+export function isBubbleAlive(outcome: RoundOutcome, id: BubbleId, elapsedMs: number): boolean {
+  return elapsedMs < outcome[id].crashTimeMs;
 }
 
-export function getAliveBubbles(outcome: RoundOutcome, tick: number): BubbleId[] {
-  return BUBBLE_IDS.filter(id => isBubbleAlive(outcome, id, tick));
+export function getAliveBubbles(outcome: RoundOutcome, elapsedMs: number): BubbleId[] {
+  return BUBBLE_IDS.filter(id => isBubbleAlive(outcome, id, elapsedMs));
 }
