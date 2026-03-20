@@ -34,6 +34,7 @@ export class BubbleView extends Container {
   private _collectVisible   = false;
   private _currentElapsedMs = 0;
   private _wobbleTime       = 0;
+  private _breathPhase      = 0;
   private _profileId: GrowthProfileId | null = null;
   private _displayScale     = 1.0;
 
@@ -133,7 +134,8 @@ export class BubbleView extends Container {
     }
 
     this._currentElapsedMs = elapsedMs;
-    this._wobbleTime += dt;
+    this._wobbleTime  += dt;
+    this._breathPhase += dt * 1.8;
 
     if (this._arrivalFlashMs > 0) {
       this._arrivalFlashMs = Math.max(0, this._arrivalFlashMs - dt * 1000);
@@ -161,11 +163,16 @@ export class BubbleView extends Container {
     const mult = this._profileId ? evaluateProfile(this._profileId, elapsedMs) : 1.0;
     this.multiplierText.text = mult.toFixed(2) + 'x';
 
-    const targetScale = 1 + (mult - 1) * 0.4;
+    // Active bubble gets a 1.07x scale boost; inactive bubbles stay at base scale
+    const baseTargetScale = 1 + (mult - 1) * 0.4;
+    const targetScale     = this._isActive ? baseTargetScale * 1.07 : baseTargetScale;
     this._displayScale += (targetScale - this._displayScale) * Math.min(dt * 8, 1);
-    this.scale.set(this._displayScale);
+    // Add slow breathing oscillation for active bubble only
+    const breathOffset = this._isActive ? 0.025 * Math.sin(this._breathPhase) : 0;
+    this.scale.set(this._displayScale + breathOffset);
 
-    this.alpha = 1;
+    // Inactive non-burst bubbles are slightly dimmed so the active one dominates
+    this.alpha = (this._isActive || this._lobbyHighlight) ? 1 : 0.72;
     this.nameLabel.visible      = true;
     this.multiplierText.visible = true;
     // COLLECT replaces risk label when active in running
@@ -207,6 +214,7 @@ export class BubbleView extends Container {
     this._collectVisible   = false;
     this._currentElapsedMs = 0;
     this._wobbleTime       = 0;
+    this._breathPhase      = 0;
     this._profileId        = null;
     this._displayScale     = 1.0;
     this._crashTimeMs      = Infinity;
@@ -262,10 +270,23 @@ export class BubbleView extends Container {
     // ---- 2. Active glow / lobby highlight ----
     const color = BUBBLE_COLORS[this.id];
     if (this._isActive) {
-      this.glow.circle(0, 0, radius + 10);
-      this.glow.fill({ color, alpha: 0.2 });
+      const breathPulse = Math.sin(this._breathPhase) * 0.5 + 0.5;  // 0..1
+
+      // Layer 1: large soft outer halo
+      this.glow.circle(0, 0, radius + 32 + breathPulse * 7);
+      this.glow.fill({ color, alpha: 0.10 + breathPulse * 0.07 });
+
+      // Layer 2: medium colored fill
+      this.glow.circle(0, 0, radius + 18);
+      this.glow.fill({ color, alpha: 0.22 + breathPulse * 0.10 });
+
+      // Layer 3: outer colored ring — pulsing
+      this.glow.circle(0, 0, radius + 20 + breathPulse * 5);
+      this.glow.stroke({ color, alpha: 0.55 + breathPulse * 0.30, width: 2.5 });
+
+      // Layer 4: bright inner white ring — pulsing alpha
       this.glow.circle(0, 0, radius + 5);
-      this.glow.stroke({ color: 0xffffff, alpha: 0.6, width: 3 });
+      this.glow.stroke({ color: 0xffffff, alpha: 0.65 + breathPulse * 0.30, width: 4 });
     } else if (this._lobbyHighlight) {
       this.glow.circle(0, 0, radius + 12);
       this.glow.stroke({ color: 0xffffff, alpha: 0.85, width: 3 });

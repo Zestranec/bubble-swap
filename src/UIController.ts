@@ -30,12 +30,16 @@ export class UIController extends Container {
   private introText!:      Text;
   private lobbyTimerText!: Text;
   private lobbyHintText!:  Text;
-  private runningHintText!:Text;
+
+  private collectText!: Text;   // primary CTA — green
+  private swapText!:    Text;   // secondary hint — amber
 
   private countdownBarBg!:   Graphics;
   private countdownBarFill!: Graphics;
 
-  private _bet = DEFAULT_BET;
+  private _bet          = DEFAULT_BET;
+  private _pulsePhase   = 0;
+  private _isRunning    = false;
 
   onIntroComplete?: () => void;
 
@@ -119,13 +123,25 @@ export class UIController extends Container {
     this.valueText.anchor.set(0.5);
     this.addChild(this.valueText);
 
-    // Running hint — just above panel
-    const runHintStyle = new TextStyle({ fontFamily: 'monospace', fontSize: 12, fill: 0x8899aa });
-    this.runningHintText = new Text({ text: 'Tap bubble to collect  |  Tap other to swap (-3%)', style: runHintStyle });
-    this.runningHintText.x = CANVAS_WIDTH / 2;
-    this.runningHintText.y = PANEL_Y - 32;
-    this.runningHintText.anchor.set(0.5);
-    this.addChild(this.runningHintText);
+    // Primary CTA — "TAP YOUR BUBBLE TO COLLECT" (green, bold, pulsing)
+    const collectStyle = new TextStyle({
+      fontFamily: 'monospace', fontSize: 21, fontWeight: 'bold', fill: 0x22c55e,
+    });
+    this.collectText = new Text({ text: 'TAP YOUR BUBBLE TO COLLECT', style: collectStyle });
+    this.collectText.x = CANVAS_WIDTH / 2;
+    this.collectText.y = PANEL_Y - 56;
+    this.collectText.anchor.set(0.5);
+    this.addChild(this.collectText);
+
+    // Secondary hint — "TAP OTHER BUBBLE TO SWITCH (-3%)" (amber, slightly smaller)
+    const swapStyle = new TextStyle({
+      fontFamily: 'monospace', fontSize: 15, fontWeight: '600', fill: 0xf59e0b,
+    });
+    this.swapText = new Text({ text: 'TAP OTHER BUBBLE TO SWITCH  (-3%)', style: swapStyle });
+    this.swapText.x = CANVAS_WIDTH / 2;
+    this.swapText.y = PANEL_Y - 28;
+    this.swapText.anchor.set(0.5);
+    this.addChild(this.swapText);
 
     // Bet controls — centered in panel
     const betRow = PANEL_Y + 18;
@@ -232,6 +248,7 @@ export class UIController extends Container {
   // ---- Intro ----
 
   showIntroUI(): void {
+    this._isRunning               = false;
     this.introOverlay.visible     = true;
     this.introText.visible        = true;
     this.setButtonVisible('intro_continue', false);
@@ -243,7 +260,8 @@ export class UIController extends Container {
     this.countdownBarBg.visible   = false;
     this.countdownBarFill.visible = false;
     this.lobbyHintText.visible    = false;
-    this.runningHintText.visible  = false;
+    this.collectText.visible      = false;
+    this.swapText.visible         = false;
     this.valueText.text           = '';
     this.statusText.text          = '';
   }
@@ -259,6 +277,7 @@ export class UIController extends Container {
   // ---- Lobby ----
 
   showLobbyUI(): void {
+    this._isRunning               = false;
     this.introOverlay.visible     = false;
     this.introText.visible        = false;
     this.setButtonVisible('intro_continue', false);
@@ -270,7 +289,8 @@ export class UIController extends Container {
     this.countdownBarBg.visible   = true;
     this.countdownBarFill.visible = true;
     this.lobbyHintText.visible    = true;
-    this.runningHintText.visible  = false;
+    this.collectText.visible      = false;
+    this.swapText.visible         = false;
     this.valueText.text           = '';
     this.statusText.text          = '';
 
@@ -312,6 +332,8 @@ export class UIController extends Container {
   // ---- Running ----
 
   showRunningUI(): void {
+    this._isRunning               = true;
+    this._pulsePhase              = 0;
     this.introOverlay.visible     = false;
     this.introText.visible        = false;
     this.setButtonVisible('intro_continue', false);
@@ -323,14 +345,18 @@ export class UIController extends Container {
     this.countdownBarBg.visible   = false;
     this.countdownBarFill.visible = false;
     this.lobbyHintText.visible    = false;
-    this.runningHintText.visible  = true;
+    this.collectText.visible      = true;
+    this.collectText.alpha        = 1;
+    this.swapText.visible         = true;
     this.statusText.text          = '';
   }
 
   // ---- Resolve ----
 
   showResolveUI(won: boolean, payout: number): void {
-    this.runningHintText.visible = false;
+    this._isRunning              = false;
+    this.collectText.visible     = false;
+    this.swapText.visible        = false;
     if (won) {
       this.statusText.style.fill = 0x44ff88;
       this.statusText.text = `SECURED! +$${payout.toFixed(2)}`;
@@ -338,6 +364,14 @@ export class UIController extends Container {
       this.statusText.style.fill = 0xff4444;
       this.statusText.text = 'BURST! $0.00';
     }
+  }
+
+  // ---- Tick (pulse animations) ----
+
+  tick(dt: number): void {
+    if (!this._isRunning) return;
+    this._pulsePhase += dt * 2.2;
+    this.collectText.alpha = 0.80 + 0.20 * Math.sin(this._pulsePhase);
   }
 
   // ---- Shared updates ----

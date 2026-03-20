@@ -258,6 +258,7 @@ export class Game {
   private update(dt: number): void {
     this.updateSwapTrails(dt * 1000);
     this.effectLayer.tick(dt);
+    this.ui.tick(dt);
     this.updateScreenShake(dt);
 
     // --- Intro state: drive typewriter animation ---
