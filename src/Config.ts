@@ -9,6 +9,7 @@ export const MIN_CRASH_MS_BY_BUBBLE: Record<BubbleId, number> = {
   red:     600,
 };
 export const MAX_ROUND_MS = 18000;
+export const LOBBY_DURATION_MS = 8000;
 
 // ---- Resolve timings ----
 export const POST_BURST_RESOLVE_DELAY_MS  = 900;
@@ -35,6 +36,6 @@ export const BUBBLE_LABELS: Record<BubbleId, string> = {
   red:    'RED',
 };
 
-export const CANVAS_WIDTH  = 900;
-export const CANVAS_HEIGHT = 600;
+export const CANVAS_WIDTH  = 430;
+export const CANVAS_HEIGHT = 760;
 export const DEFAULT_BET   = 10;

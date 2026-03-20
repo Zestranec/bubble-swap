@@ -1,17 +1,18 @@
-export type GameState = 'idle' | 'betting' | 'running' | 'resolve' | 'reset';
+export type GameState = 'intro' | 'lobby' | 'betting' | 'running' | 'resolve' | 'reset';
 
 export type StateChangeCallback = (from: GameState, to: GameState) => void;
 
 const VALID_TRANSITIONS: Record<GameState, GameState[]> = {
-  idle: ['betting'],
+  intro:   ['lobby'],
+  lobby:   ['betting'],
   betting: ['running'],
   running: ['resolve'],
   resolve: ['reset'],
-  reset: ['idle'],
+  reset:   ['lobby'],
 };
 
 export class GameStateMachine {
-  private _state: GameState = 'idle';
+  private _state: GameState = 'intro';
   private listeners: StateChangeCallback[] = [];
 
   get state(): GameState {

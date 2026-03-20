@@ -1,38 +1,43 @@
-import { Container, Graphics, Text, TextStyle, FederatedPointerEvent } from 'pixi.js';
-import { BubbleId, BUBBLE_COLORS, BUBBLE_IDS, CANVAS_WIDTH, CANVAS_HEIGHT, DEFAULT_BET } from './Config';
+import { Container, Graphics, Text, TextStyle } from 'pixi.js';
+import { BubbleId, CANVAS_WIDTH, CANVAS_HEIGHT, DEFAULT_BET } from './Config';
 
 type ButtonCallback = () => void;
 
 interface Button {
   container: Container;
-  bg: Graphics;
-  label: Text;
-  callback: ButtonCallback;
-  enabled: boolean;
+  bg:        Graphics;
+  label:     Text;
+  callback:  ButtonCallback;
+  enabled:   boolean;
 }
 
-const PANEL_Y = CANVAS_HEIGHT - 130;
-const ROW1_Y = PANEL_Y + 8;
-const ROW2_Y = PANEL_Y + 42;
-const SWAP_ZONE_CENTER = CANVAS_WIDTH / 2;
-const SWAP_BTN_W = 100;
-const SWAP_BTN_H = 30;
-const SWAP_BTN_GAP = 8;
+const PANEL_Y = CANVAS_HEIGHT - 120;  // 640
+
+const BAR_X = 30;
+const BAR_Y = 148;
+const BAR_W = CANVAS_WIDTH - 60;     // 370
+const BAR_H = 10;
 
 export class UIController extends Container {
-  private buttons: Map<string, Button> = new Map();
-  private betText!: Text;
-  private valueText!: Text;
+  private buttons:     Map<string, Button> = new Map();
+  private betText!:    Text;
+  private valueText!:  Text;
   private statusText!: Text;
-  private debugText!: Text;
-  private historyText!: Text;
+  private debugText!:  Text;
+  private historyText!:Text;
+
+  private introOverlay!:   Graphics;
+  private introText!:      Text;
+  private lobbyTimerText!: Text;
+  private lobbyHintText!:  Text;
+  private runningHintText!:Text;
+
+  private countdownBarBg!:   Graphics;
+  private countdownBarFill!: Graphics;
 
   private _bet = DEFAULT_BET;
-  private _selectedBubble: BubbleId = 'blue';
 
-  onStart?: (bet: number, bubble: BubbleId) => void;
-  onSwap?: (target: BubbleId) => void;
-  onCashout?: () => void;
+  onIntroComplete?: () => void;
 
   constructor() {
     super();
@@ -40,14 +45,11 @@ export class UIController extends Container {
   }
 
   get bet(): number { return this._bet; }
-  get selectedBubble(): BubbleId { return this._selectedBubble; }
+
+  // ---- Build ----
 
   private buildUI(): void {
-    const panelBg = new Graphics();
-    panelBg.roundRect(0, PANEL_Y - 10, CANVAS_WIDTH, 140, 8);
-    panelBg.fill({ color: 0x111122, alpha: 0.9 });
-    this.addChild(panelBg);
-
+    // Permanent header
     const headerStyle = new TextStyle({ fontFamily: 'monospace', fontSize: 22, fontWeight: 'bold', fill: 0xffffff });
     const title = new Text({ text: 'BUBBLE SWAP', style: headerStyle });
     title.x = CANVAS_WIDTH / 2;
@@ -62,77 +64,14 @@ export class UIController extends Container {
     sub.anchor.set(0.5);
     this.addChild(sub);
 
-    // --- Left zone: bet controls ---
-    const betStyle = new TextStyle({ fontFamily: 'monospace', fontSize: 14, fill: 0xcccccc });
-    this.betText = new Text({ text: `BET: $${this._bet}`, style: betStyle });
-    this.betText.x = 20;
-    this.betText.y = ROW1_Y + 4;
-    this.addChild(this.betText);
-
-    this.createButton('bet_down', '−', 120, ROW1_Y, 30, 24, () => this.adjustBet(-5));
-    this.createButton('bet_up', '+', 160, ROW1_Y, 30, 24, () => this.adjustBet(5));
-
-    // Bubble selectors (idle only) — left-center area
-    for (let i = 0; i < BUBBLE_IDS.length; i++) {
-      const id = BUBBLE_IDS[i];
-      this.createButton(
-        `select_${id}`,
-        id.toUpperCase(),
-        220 + i * 90,
-        ROW1_Y,
-        80,
-        24,
-        () => this.selectBubble(id),
-        BUBBLE_COLORS[id]
-      );
-    }
-
-    // Start button (idle only) — centered
-    this.createButton('start', 'START', CANVAS_WIDTH / 2 - 60, ROW2_Y, 120, 36, () => {
-      this.onStart?.(this._bet, this._selectedBubble);
-    }, 0x22aa44);
-
-    // --- Right zone: cashout button (running only) ---
-    this.createButton('cashout', 'CASH OUT', CANVAS_WIDTH - 170, ROW2_Y, 150, 36, () => {
-      this.onCashout?.();
-    }, 0x22aa44);
-
-    // --- Center zone: swap buttons (running only, repositioned dynamically) ---
-    for (const id of BUBBLE_IDS) {
-      this.createButton(
-        `swap_${id}`,
-        `→ ${id.toUpperCase()}`,
-        0, ROW2_Y + 3,
-        SWAP_BTN_W, SWAP_BTN_H,
-        () => this.onSwap?.(id),
-        BUBBLE_COLORS[id]
-      );
-    }
-
-    // Value readout — between rows
-    const valueStyle = new TextStyle({ fontFamily: 'monospace', fontSize: 16, fontWeight: 'bold', fill: 0x44ff88 });
-    this.valueText = new Text({ text: '', style: valueStyle });
-    this.valueText.x = CANVAS_WIDTH / 2;
-    this.valueText.y = ROW1_Y + 4;
-    this.valueText.anchor.set(0.5);
-    this.addChild(this.valueText);
-
-    // Status text (win/loss) — above panel
-    const statusStyle = new TextStyle({ fontFamily: 'monospace', fontSize: 20, fontWeight: 'bold', fill: 0xffffff });
-    this.statusText = new Text({ text: '', style: statusStyle });
-    this.statusText.x = CANVAS_WIDTH / 2;
-    this.statusText.y = CANVAS_HEIGHT / 2 + 130;
-    this.statusText.anchor.set(0.5);
-    this.addChild(this.statusText);
-
-    // Debug overlay — top left
+    // Debug overlay (top left)
     const debugStyle = new TextStyle({ fontFamily: 'monospace', fontSize: 10, fill: 0x666677 });
     this.debugText = new Text({ text: '', style: debugStyle });
     this.debugText.x = 10;
     this.debugText.y = 65;
     this.addChild(this.debugText);
 
-    // History — top right
+    // History (top right)
     const historyStyle = new TextStyle({ fontFamily: 'monospace', fontSize: 10, fill: 0x555566 });
     this.historyText = new Text({ text: '', style: historyStyle });
     this.historyText.x = CANVAS_WIDTH - 10;
@@ -140,8 +79,107 @@ export class UIController extends Container {
     this.historyText.anchor.set(1, 0);
     this.addChild(this.historyText);
 
-    this.showIdleUI();
+    // Lobby countdown timer — large, above bar
+    const timerStyle = new TextStyle({ fontFamily: 'monospace', fontSize: 38, fontWeight: 'bold', fill: 0xffffff });
+    this.lobbyTimerText = new Text({ text: '8', style: timerStyle });
+    this.lobbyTimerText.x = CANVAS_WIDTH / 2;
+    this.lobbyTimerText.y = 80;
+    this.lobbyTimerText.anchor.set(0.5, 0);
+    this.addChild(this.lobbyTimerText);
+
+    // Countdown bar background
+    this.countdownBarBg = new Graphics();
+    this.countdownBarBg.roundRect(BAR_X, BAR_Y, BAR_W, BAR_H, 5);
+    this.countdownBarBg.fill({ color: 0x222233, alpha: 1 });
+    this.addChild(this.countdownBarBg);
+
+    // Countdown bar fill (redrawn each update)
+    this.countdownBarFill = new Graphics();
+    this.addChild(this.countdownBarFill);
+
+    // Lobby hint below bar
+    const hintStyle = new TextStyle({ fontFamily: 'monospace', fontSize: 13, fill: 0xaaaacc });
+    this.lobbyHintText = new Text({ text: '', style: hintStyle });
+    this.lobbyHintText.x = CANVAS_WIDTH / 2;
+    this.lobbyHintText.y = 172;
+    this.lobbyHintText.anchor.set(0.5);
+    this.addChild(this.lobbyHintText);
+
+    // Bottom panel background
+    const panelBg = new Graphics();
+    panelBg.roundRect(0, PANEL_Y - 10, CANVAS_WIDTH, 130, 8);
+    panelBg.fill({ color: 0x111122, alpha: 0.9 });
+    this.addChild(panelBg);
+
+    // Value readout — above panel during running
+    const valueStyle = new TextStyle({ fontFamily: 'monospace', fontSize: 16, fontWeight: 'bold', fill: 0x44ff88 });
+    this.valueText = new Text({ text: '', style: valueStyle });
+    this.valueText.x = CANVAS_WIDTH / 2;
+    this.valueText.y = PANEL_Y - 60;
+    this.valueText.anchor.set(0.5);
+    this.addChild(this.valueText);
+
+    // Running hint — just above panel
+    const runHintStyle = new TextStyle({ fontFamily: 'monospace', fontSize: 12, fill: 0x8899aa });
+    this.runningHintText = new Text({ text: 'Tap bubble to collect  |  Tap other to swap (-3%)', style: runHintStyle });
+    this.runningHintText.x = CANVAS_WIDTH / 2;
+    this.runningHintText.y = PANEL_Y - 32;
+    this.runningHintText.anchor.set(0.5);
+    this.addChild(this.runningHintText);
+
+    // Bet controls — centered in panel
+    const betRow = PANEL_Y + 18;
+    const betLabelStyle = new TextStyle({ fontFamily: 'monospace', fontSize: 15, fill: 0xcccccc });
+    this.betText = new Text({ text: `BET: $${this._bet}`, style: betLabelStyle });
+    this.betText.x = CANVAS_WIDTH / 2;
+    this.betText.y = betRow + 22;
+    this.betText.anchor.set(0.5);
+    this.addChild(this.betText);
+
+    this.createButton('bet_down', '−', CANVAS_WIDTH / 2 - 100, betRow, 44, 44, () => this.adjustBet(-5));
+    this.createButton('bet_up',   '+', CANVAS_WIDTH / 2 + 56,  betRow, 44, 44, () => this.adjustBet(5));
+
+    // Win/loss status — center stage
+    const statusStyle = new TextStyle({ fontFamily: 'monospace', fontSize: 20, fontWeight: 'bold', fill: 0xffffff });
+    this.statusText = new Text({ text: '', style: statusStyle });
+    this.statusText.x = CANVAS_WIDTH / 2;
+    this.statusText.y = 530;
+    this.statusText.anchor.set(0.5);
+    this.addChild(this.statusText);
+
+    // ---- Intro overlay (added last — renders on top) ----
+    this.introOverlay = new Graphics();
+    this.introOverlay.rect(0, 60, CANVAS_WIDTH, CANVAS_HEIGHT - 60);
+    this.introOverlay.fill({ color: 0x060614, alpha: 0.97 });
+    this.addChild(this.introOverlay);
+
+    const introStyle = new TextStyle({
+      fontFamily:    'monospace',
+      fontSize:      20,
+      fill:          0xdde0ff,
+      wordWrap:      true,
+      wordWrapWidth: 380,
+      lineHeight:    36,
+    });
+    this.introText = new Text({ text: '', style: introStyle });
+    this.introText.x = CANVAS_WIDTH / 2;
+    this.introText.y = 160;
+    this.introText.anchor.set(0.5, 0);
+    this.addChild(this.introText);
+
+    this.createButton(
+      'intro_continue',
+      'Вложиться в пузырь',
+      CANVAS_WIDTH / 2 - 125, 380,
+      250, 46,
+      () => this.onIntroComplete?.(),
+      0x1a3a7a
+    );
+
+    this.showIntroUI();
   }
+
+  // ---- Button helpers ----
 
   private createButton(
     name: string, text: string,
@@ -153,7 +191,7 @@ export class UIController extends Container {
     container.x = x;
     container.y = y;
     container.eventMode = 'static';
-    container.cursor = 'pointer';
+    container.cursor    = 'pointer';
 
     const bg = new Graphics();
     bg.roundRect(0, 0, w, h, 6);
@@ -161,7 +199,7 @@ export class UIController extends Container {
     bg.stroke({ color: 0xffffff, alpha: 0.2, width: 1 });
     container.addChild(bg);
 
-    const style = new TextStyle({ fontFamily: 'monospace', fontSize: 12, fontWeight: 'bold', fill: 0xffffff });
+    const style = new TextStyle({ fontFamily: 'monospace', fontSize: 16, fontWeight: 'bold', fill: 0xffffff });
     const label = new Text({ text, style });
     label.anchor.set(0.5);
     label.x = w / 2;
@@ -169,7 +207,7 @@ export class UIController extends Container {
     container.addChild(label);
 
     const btn: Button = { container, bg, label, callback, enabled: true };
-    container.on('pointerdown', (_e: FederatedPointerEvent) => {
+    container.on('pointerdown', () => {
       if (btn.enabled) btn.callback();
     });
 
@@ -183,92 +221,116 @@ export class UIController extends Container {
     if (btn) btn.container.visible = visible;
   }
 
-  private setButtonEnabled(name: string, enabled: boolean): void {
-    const btn = this.buttons.get(name);
-    if (btn) {
-      btn.enabled = enabled;
-      btn.container.alpha = enabled ? 1 : 0.4;
-    }
-  }
-
   private adjustBet(delta: number): void {
     this._bet = Math.max(5, Math.min(1000, this._bet + delta));
     this.betText.text = `BET: $${this._bet}`;
-  }
-
-  private selectBubble(id: BubbleId): void {
-    this._selectedBubble = id;
-    for (const bid of BUBBLE_IDS) {
-      const btn = this.buttons.get(`select_${bid}`);
-      if (btn) {
-        btn.bg.clear();
-        btn.bg.roundRect(0, 0, 80, 24, 6);
-        const isSelected = bid === id;
-        btn.bg.fill({ color: BUBBLE_COLORS[bid], alpha: isSelected ? 0.9 : 0.3 });
-        btn.bg.stroke({ color: 0xffffff, alpha: isSelected ? 0.8 : 0.1, width: isSelected ? 2 : 1 });
-      }
+    if (this.lobbyHintText.visible && this.lobbyHintText.text.startsWith('Tap a bubble')) {
+      this.lobbyHintText.text = `Tap a bubble to enter ($${this._bet})`;
     }
   }
 
-  showIdleUI(): void {
-    this.setButtonVisible('start', true);
-    this.setButtonVisible('cashout', false);
-    this.setButtonVisible('bet_down', true);
-    this.setButtonVisible('bet_up', true);
-    this.betText.visible = true;
-    this.valueText.text = '';
-    for (const id of BUBBLE_IDS) {
-      this.setButtonVisible(`select_${id}`, true);
-      this.setButtonVisible(`swap_${id}`, false);
-    }
-    this.setButtonEnabled('start', true);
-    this.statusText.text = '';
-    this.selectBubble(this._selectedBubble);
-  }
+  // ---- Intro ----
 
-  showRunningUI(activeBubble: BubbleId): void {
-    this.setButtonVisible('start', false);
-    this.setButtonVisible('cashout', true);
-    this.setButtonEnabled('cashout', true);
+  showIntroUI(): void {
+    this.introOverlay.visible     = true;
+    this.introText.visible        = true;
+    this.setButtonVisible('intro_continue', false);
+
     this.setButtonVisible('bet_down', false);
-    this.setButtonVisible('bet_up', false);
-    this.betText.visible = false;
-    for (const id of BUBBLE_IDS) {
-      this.setButtonVisible(`select_${id}`, false);
-    }
-    this.updateSwapButtons(activeBubble, BUBBLE_IDS);
-    this.statusText.text = '';
+    this.setButtonVisible('bet_up',   false);
+    this.betText.visible          = false;
+    this.lobbyTimerText.visible   = false;
+    this.countdownBarBg.visible   = false;
+    this.countdownBarFill.visible = false;
+    this.lobbyHintText.visible    = false;
+    this.runningHintText.visible  = false;
+    this.valueText.text           = '';
+    this.statusText.text          = '';
   }
 
-  updateSwapButtons(activeBubble: BubbleId, aliveBubbles: BubbleId[]): void {
-    const visibleIds: BubbleId[] = [];
-    for (const id of BUBBLE_IDS) {
-      const show = aliveBubbles.includes(id) && id !== activeBubble;
-      this.setButtonVisible(`swap_${id}`, show);
-      this.setButtonEnabled(`swap_${id}`, show);
-      if (show) visibleIds.push(id);
-    }
-    this.repositionSwapButtons(visibleIds);
+  updateIntroText(text: string): void {
+    this.introText.text = text;
   }
 
-  private repositionSwapButtons(visibleIds: BubbleId[]): void {
-    const count = visibleIds.length;
-    if (count === 0) return;
-    const totalWidth = count * SWAP_BTN_W + (count - 1) * SWAP_BTN_GAP;
-    const startX = SWAP_ZONE_CENTER - totalWidth / 2;
-    for (let i = 0; i < count; i++) {
-      const btn = this.buttons.get(`swap_${visibleIds[i]}`);
-      if (btn) {
-        btn.container.x = startX + i * (SWAP_BTN_W + SWAP_BTN_GAP);
-      }
+  showIntroContinueButton(show: boolean): void {
+    this.setButtonVisible('intro_continue', show);
+  }
+
+  // ---- Lobby ----
+
+  showLobbyUI(): void {
+    this.introOverlay.visible     = false;
+    this.introText.visible        = false;
+    this.setButtonVisible('intro_continue', false);
+
+    this.setButtonVisible('bet_down', true);
+    this.setButtonVisible('bet_up',   true);
+    this.betText.visible          = true;
+    this.lobbyTimerText.visible   = true;
+    this.countdownBarBg.visible   = true;
+    this.countdownBarFill.visible = true;
+    this.lobbyHintText.visible    = true;
+    this.runningHintText.visible  = false;
+    this.valueText.text           = '';
+    this.statusText.text          = '';
+
+    this.lobbyHintText.text = `Tap a bubble to enter ($${this._bet})`;
+  }
+
+  /** Call every frame during lobby with remaining ms and total lobby duration. */
+  updateLobbyProgress(remainingMs: number, totalMs: number): void {
+    this.lobbyTimerText.text = String(Math.ceil(remainingMs / 1000));
+
+    const ratio = Math.max(0, remainingMs / totalMs);
+    const fillW = Math.round(BAR_W * ratio);
+
+    // Drain right-to-left: blue → yellow → red as time runs out
+    let color: number;
+    if (ratio > 0.5) {
+      color = 0x4488ff;
+    } else if (ratio > 0.25) {
+      color = 0xeab308;
+    } else {
+      color = 0xef4444;
+    }
+
+    this.countdownBarFill.clear();
+    if (fillW > 0) {
+      this.countdownBarFill.roundRect(BAR_X, BAR_Y, fillW, BAR_H, 5);
+      this.countdownBarFill.fill({ color, alpha: 1 });
     }
   }
+
+  updateLobbyHint(selectedBubble: BubbleId | null): void {
+    if (selectedBubble) {
+      this.lobbyHintText.text = `${selectedBubble.toUpperCase()} selected — starting in...`;
+    } else {
+      this.lobbyHintText.text = `Tap a bubble to enter ($${this._bet})`;
+    }
+  }
+
+  // ---- Running ----
+
+  showRunningUI(): void {
+    this.introOverlay.visible     = false;
+    this.introText.visible        = false;
+    this.setButtonVisible('intro_continue', false);
+
+    this.setButtonVisible('bet_down', false);
+    this.setButtonVisible('bet_up',   false);
+    this.betText.visible          = false;
+    this.lobbyTimerText.visible   = false;
+    this.countdownBarBg.visible   = false;
+    this.countdownBarFill.visible = false;
+    this.lobbyHintText.visible    = false;
+    this.runningHintText.visible  = true;
+    this.statusText.text          = '';
+  }
+
+  // ---- Resolve ----
 
   showResolveUI(won: boolean, payout: number): void {
-    this.setButtonVisible('cashout', false);
-    for (const id of BUBBLE_IDS) {
-      this.setButtonVisible(`swap_${id}`, false);
-    }
+    this.runningHintText.visible = false;
     if (won) {
       this.statusText.style.fill = 0x44ff88;
       this.statusText.text = `SECURED! +$${payout.toFixed(2)}`;
@@ -278,8 +340,12 @@ export class UIController extends Container {
     }
   }
 
+  // ---- Shared updates ----
+
   updateValue(gross: number, net: number): void {
-    this.valueText.text = `Value: $${gross.toFixed(2)}  |  Cashout: $${net.toFixed(2)}`;
+    this.valueText.text = gross > 0
+      ? `Value: $${gross.toFixed(2)}  |  Cashout: $${net.toFixed(2)}`
+      : '';
   }
 
   updateDebug(text: string): void {
@@ -291,14 +357,6 @@ export class UIController extends Container {
   }
 
   lockAllInput(): void {
-    this.setButtonEnabled('cashout', false);
-    for (const id of BUBBLE_IDS) {
-      this.setButtonEnabled(`swap_${id}`, false);
-    }
-  }
-
-  unlockRunningInput(activeBubble: BubbleId, aliveBubbles: BubbleId[]): void {
-    this.setButtonEnabled('cashout', true);
-    this.updateSwapButtons(activeBubble, aliveBubbles);
+    // No interactive buttons in running state to disable
   }
 }

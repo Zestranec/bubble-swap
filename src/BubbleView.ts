@@ -2,10 +2,11 @@ import { Container, Graphics, Text, TextStyle } from 'pixi.js';
 import { BubbleId, BUBBLE_COLORS, BUBBLE_LABELS, MAX_ROUND_MS } from './Config';
 import { GrowthProfileId, evaluateProfile } from './GrowthProfiles';
 
-const BASE_RADIUS = 50;
-const MAX_RADIUS  = 100;
+const BASE_RADIUS      = 55;
 const WOBBLE_AMPLITUDE = 3;
 const WOBBLE_SPEED     = 4;
+const WARN_WINDOW_MS   = 500;
+const ARRIVAL_FLASH_MS = 280;
 
 const FRAGMENT_COUNT = 12;
 export const FRAGMENT_LIFE_MS = 600;
@@ -21,20 +22,39 @@ export class BubbleView extends Container {
   readonly id: BubbleId;
   private body: Graphics;
   private glow: Graphics;
-  private nameLabel: Text;
-  private multiplierText: Text;
-  private riskLabel: Text;
+  private nameLabel:     Text;
+  private multiplierText:Text;
+  private riskLabel:     Text;
+  private collectLabel:  Text;     // shown on active bubble during running
 
   private fragments: Fragment[] = [];
-  private _isActive        = false;
-  private _isBurst         = false;
+  private _isActive         = false;
+  private _isBurst          = false;
+  private _lobbyHighlight   = false;
+  private _collectVisible   = false;
   private _currentElapsedMs = 0;
-  private _wobbleTime      = 0;
+  private _wobbleTime       = 0;
   private _profileId: GrowthProfileId | null = null;
+  private _displayScale     = 1.0;
+
+  // Pre-crash anticipation
+  private _crashTimeMs  = Infinity;
+  private _warnProgress = 0;
+
+  // Swap arrival flash
+  private _arrivalFlashMs = 0;
+
+  /** Fired when the bubble is tapped/clicked (not burst). */
+  onTap?: (id: BubbleId) => void;
 
   constructor(id: BubbleId) {
     super();
     this.id = id;
+    this.eventMode = 'static';
+    this.cursor    = 'pointer';
+    this.on('pointerdown', () => {
+      if (!this._isBurst) this.onTap?.(this.id);
+    });
 
     this.glow = new Graphics();
     this.addChild(this.glow);
@@ -45,22 +65,22 @@ export class BubbleView extends Container {
     const color = BUBBLE_COLORS[id];
 
     const labelStyle = new TextStyle({
-      fontFamily: 'monospace', fontSize: 14, fontWeight: 'bold', fill: 0xffffff,
+      fontFamily: 'monospace', fontSize: 13, fontWeight: 'bold', fill: 0xffffff,
     });
     this.nameLabel = new Text({ text: BUBBLE_LABELS[id], style: labelStyle });
     this.nameLabel.anchor.set(0.5);
-    this.nameLabel.y = -12;
+    this.nameLabel.y = -14;
     this.addChild(this.nameLabel);
 
     const multStyle = new TextStyle({
-      fontFamily: 'monospace', fontSize: 18, fontWeight: 'bold', fill: 0xffffff,
+      fontFamily: 'monospace', fontSize: 17, fontWeight: 'bold', fill: 0xffffff,
     });
     this.multiplierText = new Text({ text: '1.00x', style: multStyle });
     this.multiplierText.anchor.set(0.5);
-    this.multiplierText.y = 10;
+    this.multiplierText.y = 6;
     this.addChild(this.multiplierText);
 
-    const riskStyle = new TextStyle({ fontFamily: 'monospace', fontSize: 10, fill: color });
+    const riskStyle = new TextStyle({ fontFamily: 'monospace', fontSize: 9, fill: color });
     const riskMap: Record<BubbleId, string> = {
       blue:   'LOW RISK',
       yellow: 'MED RISK',
@@ -68,8 +88,18 @@ export class BubbleView extends Container {
     };
     this.riskLabel = new Text({ text: riskMap[id], style: riskStyle });
     this.riskLabel.anchor.set(0.5);
-    this.riskLabel.y = 30;
+    this.riskLabel.y = 26;
     this.addChild(this.riskLabel);
+
+    // Collect affordance — shown only on active bubble during running
+    const collectStyle = new TextStyle({
+      fontFamily: 'monospace', fontSize: 11, fontWeight: 'bold', fill: 0x44ff88,
+    });
+    this.collectLabel = new Text({ text: 'COLLECT', style: collectStyle });
+    this.collectLabel.anchor.set(0.5);
+    this.collectLabel.y = 26;   // same y as riskLabel — replaces it when active
+    this.collectLabel.visible = false;
+    this.addChild(this.collectLabel);
 
     this.drawBody(BASE_RADIUS);
   }
@@ -78,16 +108,24 @@ export class BubbleView extends Container {
 
   setActive(active: boolean): void { this._isActive = active; }
   get isActive(): boolean           { return this._isActive; }
-  get isBurst(): boolean            { return this._isBurst; }
+  get isBurst():  boolean           { return this._isBurst; }
 
-  /** Call at round start with the profile drawn for this bubble this round. */
-  setProfile(profileId: GrowthProfileId): void {
-    this._profileId = profileId;
-  }
+  setLobbyHighlight(on: boolean): void { this._lobbyHighlight = on; }
+
+  /** Show/hide the COLLECT affordance on this bubble. */
+  setCollectVisible(visible: boolean): void { this._collectVisible = visible; }
+
+  /** Set crash time to enable pre-crash warning glow. */
+  setCrashTime(ms: number): void { this._crashTimeMs = ms; }
+
+  /** Briefly flash on swap arrival. */
+  triggerArrivalFlash(): void { this._arrivalFlashMs = ARRIVAL_FLASH_MS; }
+
+  /** Call at round start with the assigned growth profile. */
+  setProfile(profileId: GrowthProfileId): void { this._profileId = profileId; }
 
   // ---- Update ----
 
-  /** elapsedMs = milliseconds since round start (0 during idle). */
   tickUpdate(elapsedMs: number, dt: number): void {
     if (this._isBurst) {
       this.updateFragments(dt);
@@ -97,23 +135,42 @@ export class BubbleView extends Container {
     this._currentElapsedMs = elapsedMs;
     this._wobbleTime += dt;
 
-    const progress  = Math.min(elapsedMs / MAX_ROUND_MS, 1);
-    const radius    = BASE_RADIUS + (MAX_RADIUS - BASE_RADIUS) * progress;
+    if (this._arrivalFlashMs > 0) {
+      this._arrivalFlashMs = Math.max(0, this._arrivalFlashMs - dt * 1000);
+    }
 
+    // Pre-crash warning progress
+    if (this._crashTimeMs < Infinity) {
+      const warnStart = this._crashTimeMs - WARN_WINDOW_MS;
+      this._warnProgress = Math.max(0, Math.min(1, (elapsedMs - warnStart) / WARN_WINDOW_MS));
+    } else {
+      this._warnProgress = 0;
+    }
+
+    const progress    = Math.min(elapsedMs / MAX_ROUND_MS, 1);
     const instability = progress * progress;
-    const wobble = Math.sin(this._wobbleTime * WOBBLE_SPEED * (1 + instability * 3))
-      * WOBBLE_AMPLITUDE * (1 + instability * 4);
 
-    this.drawBody(radius + wobble);
-    this.drawGlow(radius + wobble);
+    const speedMult = 1 + instability * 3 + this._warnProgress * 2.5;
+    const ampMult   = 1 + instability * 4 + this._warnProgress * 4;
+    const wobble = Math.sin(this._wobbleTime * WOBBLE_SPEED * speedMult)
+      * WOBBLE_AMPLITUDE * ampMult;
+
+    this.drawBody(BASE_RADIUS + wobble);
+    this.drawGlow(BASE_RADIUS + wobble);
 
     const mult = this._profileId ? evaluateProfile(this._profileId, elapsedMs) : 1.0;
     this.multiplierText.text = mult.toFixed(2) + 'x';
 
+    const targetScale = 1 + (mult - 1) * 0.4;
+    this._displayScale += (targetScale - this._displayScale) * Math.min(dt * 8, 1);
+    this.scale.set(this._displayScale);
+
     this.alpha = 1;
     this.nameLabel.visible      = true;
     this.multiplierText.visible = true;
-    this.riskLabel.visible      = true;
+    // COLLECT replaces risk label when active in running
+    this.riskLabel.visible    = !this._collectVisible;
+    this.collectLabel.visible =  this._collectVisible;
   }
 
   // ---- Burst ----
@@ -127,6 +184,7 @@ export class BubbleView extends Container {
     this.nameLabel.visible      = false;
     this.multiplierText.visible = false;
     this.riskLabel.visible      = false;
+    this.collectLabel.visible   = false;
 
     this.spawnFragments();
   }
@@ -145,21 +203,29 @@ export class BubbleView extends Container {
     this.cleanup();
     this._isBurst          = false;
     this._isActive         = false;
+    this._lobbyHighlight   = false;
+    this._collectVisible   = false;
     this._currentElapsedMs = 0;
     this._wobbleTime       = 0;
     this._profileId        = null;
+    this._displayScale     = 1.0;
+    this._crashTimeMs      = Infinity;
+    this._warnProgress     = 0;
+    this._arrivalFlashMs   = 0;
 
+    this.scale.set(1.0);
     this.alpha = 1;
     this.nameLabel.visible      = true;
     this.multiplierText.visible = true;
     this.riskLabel.visible      = true;
+    this.collectLabel.visible   = false;
     this.multiplierText.text    = '1.00x';
 
     this.drawBody(BASE_RADIUS);
     this.glow.clear();
   }
 
-  // ---- Private helpers ----
+  // ---- Private draw ----
 
   private drawBody(radius: number): void {
     const color = BUBBLE_COLORS[this.id];
@@ -170,20 +236,54 @@ export class BubbleView extends Container {
   }
 
   private drawGlow(radius: number): void {
-    const color = BUBBLE_COLORS[this.id];
     this.glow.clear();
-    if (this._isActive && !this._isBurst) {
+    if (this._isBurst) return;
+
+    // ---- 1. Pre-crash warning rings ----
+    if (this._warnProgress > 0) {
+      const p     = this._warnProgress;
+      const pulse = (Math.sin(this._wobbleTime * (9 + p * 22)) * 0.5 + 0.5);
+
+      this.glow.circle(0, 0, radius + 13 + pulse * 9 * p);
+      this.glow.stroke({ color: 0xff6200, alpha: p * (0.3 + pulse * 0.5), width: 1.5 + p * 2.5 });
+
+      if (p > 0.35) {
+        const tintA = (p - 0.35) / 0.65 * 0.13 * (0.4 + pulse * 0.6);
+        this.glow.circle(0, 0, radius);
+        this.glow.fill({ color: 0xff2200, alpha: tintA });
+      }
+
+      if (this._isActive && p > 0.5) {
+        this.glow.circle(0, 0, radius + 22 + pulse * 14);
+        this.glow.stroke({ color: 0xffaa00, alpha: (p - 0.5) * 0.9 * pulse, width: 2 });
+      }
+    }
+
+    // ---- 2. Active glow / lobby highlight ----
+    const color = BUBBLE_COLORS[this.id];
+    if (this._isActive) {
       this.glow.circle(0, 0, radius + 10);
       this.glow.fill({ color, alpha: 0.2 });
       this.glow.circle(0, 0, radius + 5);
       this.glow.stroke({ color: 0xffffff, alpha: 0.6, width: 3 });
+    } else if (this._lobbyHighlight) {
+      this.glow.circle(0, 0, radius + 12);
+      this.glow.stroke({ color: 0xffffff, alpha: 0.85, width: 3 });
+    }
+
+    // ---- 3. Swap arrival flash ----
+    if (this._arrivalFlashMs > 0) {
+      const fp = this._arrivalFlashMs / ARRIVAL_FLASH_MS;
+      this.glow.circle(0, 0, radius + 20);
+      this.glow.stroke({ color: 0xffffff, alpha: fp * 0.85, width: 3 + fp * 4 });
+      this.glow.circle(0, 0, radius + 6);
+      this.glow.fill({ color: 0xffffff, alpha: fp * 0.22 });
     }
   }
 
   private spawnFragments(): void {
-    const color    = BUBBLE_COLORS[this.id];
-    const progress = Math.min(this._currentElapsedMs / MAX_ROUND_MS, 1);
-    const radius   = BASE_RADIUS + (MAX_RADIUS - BASE_RADIUS) * progress;
+    const color  = BUBBLE_COLORS[this.id];
+    const radius = BASE_RADIUS * this._displayScale;
 
     for (let i = 0; i < FRAGMENT_COUNT; i++) {
       const angle = (Math.PI * 2 * i) / FRAGMENT_COUNT + (Math.random() - 0.5) * 0.5;
@@ -203,9 +303,9 @@ export class BubbleView extends Container {
 
   private updateFragments(dt: number): void {
     for (const f of this.fragments) {
-      f.life    -= dt * 1000;
-      f.gfx.x   += f.vx * dt;
-      f.gfx.y   += f.vy * dt;
+      f.life     -= dt * 1000;
+      f.gfx.x    += f.vx * dt;
+      f.gfx.y    += f.vy * dt;
       f.gfx.alpha = Math.max(0, f.life / FRAGMENT_LIFE_MS);
       f.vy += 100 * dt;
     }
